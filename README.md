@@ -7,7 +7,7 @@ Liest einen RESOL-VBus-USB-Adapter (z. B. DeltaSol) seriell aus und schreibt die
 - VBus seriell → InfluxDB 1.x im ioBroker-resol.0-Schema: eine Measurement je Datenpunkt, Felder `value`, `ack`, `from`, `q`
 - Datenpunkt-Whitelist (leer/`null` = alle erkannten Datenpunkte)
 - VBus-over-TCP-Port, über den weitere VBus-Clients mitlesen können
-- Web-UI zur Konfiguration der Influx-Verbindung; Änderungen landen in der Override-Datei `config.local.json`
+- Web-Oberfläche „VBus Monitor": Live-Werte aller Datenpunkte, Port- und InfluxDB-Status, InfluxDB-Verbindung zur Laufzeit änderbar (gespeichert in `config.local.json`), siehe [Web-Oberfläche](#web-oberfläche)
 
 ## Voraussetzungen
 
@@ -55,6 +55,30 @@ Die udev-Regel legt `/dev/vbus` als stabilen Gerätenamen an. Die Unit läuft oh
 | `datapoints` | Whitelist der Datenpunkt-IDs; `null` = alle | `null` |
 
 `config.local.json` (von der Web-UI geschrieben) überschreibt die `influx`-Werte aus `config.js`. Wer Werte in `config.js` ändert und keine Wirkung sieht, sollte dort nachsehen.
+
+## Web-Oberfläche
+
+Erreichbar unter `http://<host>:<web.port>/` (Standard Port 80; mit `web: false` abgeschaltet).
+
+**Seite „VBus Monitor":**
+- Kachel je seriellem Port: Status, Alter der letzten Daten, Anzahl verbundener TCP-Clients
+- Kachel InfluxDB: Verbindungsstatus, Version, Alter des letzten Schreibvorgangs, geschriebene Punkte, Fehler
+- Tabelle aller empfangenen Datenpunkte: Feld, Wert, ob nach InfluxDB geschrieben wird, Datenpunkt-ID, Alter des Werts — nützlich, um die IDs für die `datapoints`-Whitelist zu finden
+
+**InfluxDB-Einstellungen** (aufklappbarer Bereich „InfluxDB-Einstellungen"):
+- Felder: `URL`, `Bucket`, `Token`, `Org`, `Namespace`, `from-Feld` (entsprechen `influx.*` in der Konfiguration)
+- „Speichern und anwenden" übernimmt die Werte **zur Laufzeit ohne Neustart**: Sie werden in `config.local.json` gespeichert, der Schreib-Client wird neu aufgebaut und die Verbindung sofort geprüft
+- Prüfungen: `URL` muss mit `http://` oder `https://` beginnen, `Bucket` darf nicht leer sein (sonst Fehlermeldung, nichts wird gespeichert)
+
+**API** (von der Seite selbst genutzt):
+
+| Pfad | Methode | Inhalt |
+|---|---|---|
+| `/api/status` | GET | Ports, letzte Datenpunkte, InfluxDB-Zustand, Uptime |
+| `/api/config` | GET | aktuelle `influx`-Einstellungen + Verbindungszustand |
+| `/api/config` | POST | JSON mit `url`, `token`, `org`, `bucket`, `namespace`, `from` (Teilmenge genügt) → speichern und anwenden |
+
+Beide GET-Endpunkte liefern das `token` im Klartext.
 
 ## Betrieb
 
