@@ -11,7 +11,7 @@ Liest einen RESOL-VBus-USB-Adapter (z. B. DeltaSol) seriell aus und schreibt die
 
 ## Voraussetzungen
 
-- Node.js ≥ 16 (erforderlich für `serialport` 11; `package.json` enthält kein `engines`-Feld)
+- Node.js (im Betrieb mit Node 21.7.3 auf armv6l eingesetzt; `package.json` enthält kein `engines`-Feld)
 - RESOL-VBus-USB-Adapter (USB-ID `1fef:2018`)
 - InfluxDB 1.x (Ansprache über den v2-Kompatibilitätslayer, `/api/v2/write`)
 
@@ -70,5 +70,5 @@ Manueller Test: `node main.js` im Installationsverzeichnis.
 
 - Nur EIN Prozess darf den seriellen Port lesen. Alte Bridges oder der ioBroker-Adapter müssen vorher gestoppt werden.
 - InfluxDB verwirft Punkte stillschweigend, wenn der Feldtyp mit dem einer bestehenden Series kollidiert. Bei fehlenden Daten Influx-Log prüfen und bei Migrationen Feldtypen der vorhandenen Series beachten.
-- Auf armv6 (z. B. Raspberry Pi Zero/1) ist `npm install` mit nativem `serialport`-Build heikel; ggf. auf einem anderen Rechner bauen bzw. vorkompilierte Binaries nutzen.
+- Auf armv6 (z. B. Raspberry Pi Zero/1) ist `npm install` heikel, weil das native `serialport`-Binding neu gebaut wird. Abhängigkeitsversionen passend zu den bereits installierten `node_modules` halten (`npm ci` mit dem mitgelieferten `package-lock.json`).
 - Sicherheit: Die Web-UI hat keine Authentifizierung und zeigt die Influx-Zugangsdaten an. Nur in einem vertrauenswürdigen Netz betreiben (oder mit `web: false` abschalten).
