@@ -1,0 +1,3 @@
+# RESOL VBus/USB-Adapter (1fef:2018) bekommt einen stabilen Namen,
+# damit er nach dem Aus- und Einstecken nicht als ttyACM1 auftaucht.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1fef", ATTRS{idProduct}=="2018", SYMLINK+="vbus", MODE="0660", GROUP="dialout"

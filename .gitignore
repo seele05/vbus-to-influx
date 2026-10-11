@@ -1,0 +1,6 @@
+node_modules/
+config.js
+config.local.json
+*.bak*
+.DS_Store
+.claude/

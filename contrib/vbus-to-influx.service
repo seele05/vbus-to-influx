@@ -1,0 +1,17 @@
+[Unit]
+Description=VBus to InfluxDB
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vbus-to-influx
+ExecStart=/usr/bin/node /opt/vbus-to-influx/main.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vbus-to-influx
+
+[Install]
+WantedBy=multi-user.target
