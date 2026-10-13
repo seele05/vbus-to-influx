@@ -2,6 +2,7 @@
   "name": "vbus-to-influx",
   "version": "3.1.0",
   "description": "VBus-Bruecke: serieller RESOL-Adapter -> InfluxDB, im Datenpunkt-Schema von iobroker.resol; stellt zusaetzlich den TCP-Endpunkt der serial-to-tcp-Bridge bereit",
+  "license": "MIT",
   "main": "main.js",
   "scripts": {
     "start": "node main.js",

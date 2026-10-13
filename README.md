@@ -123,3 +123,7 @@ Manueller Test: `node main.js` im Installationsverzeichnis. Unit-Tests der Spiel
 - Auf armv6 (z. B. Raspberry Pi Zero/1) ist `npm install` heikel, weil das native `serialport`-Binding neu gebaut wird. Abhängigkeitsversionen passend zu den bereits installierten `node_modules` halten (`npm ci` mit dem mitgelieferten `package-lock.json`).
 - Sicherheit: Die Web-UI hat keine Authentifizierung. Das Influx-Token wird zwar nicht mehr ausgeliefert, URL/Bucket/Org sind aber sichtbar, und jeder im Netz kann die Einstellungen ändern. Nur in einem vertrauenswürdigen Netz betreiben (oder mit `web: false` abschalten).
 - TCP-Clients, die mehr als 1 MiB Daten nicht abholen, werden getrennt, damit ein hängender Client den Speicher nicht füllt. Clients bleiben verbunden, wenn der serielle Port kurz wegfällt und neu geöffnet wird.
+
+## Lizenz
+
+[MIT](LICENSE)
