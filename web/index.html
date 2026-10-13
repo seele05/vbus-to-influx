@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VBus Monitor</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%98%80%EF%B8%8F%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f5f8;
+      --surface: #ffffff;
+      --surface-2: #f0f2f6;
+      --border: #e2e5ec;
+      --ink: #161a23;
+      --ink-2: #4b5363;
+      --ink-3: #7a8292;
+      --accent: #d97706;
+      --accent-soft: #fdf1df;
+      --bar: #d97706;
+      --grid: #e8eaf0;
+      --good: #15803d;
+      --good-soft: #dcf5e4;
+      --bad: #c2271d;
+      --bad-soft: #fde4e2;
+      --warn: #b45309;
+      --hot: #dc4a1a;
+      --cold: #2563eb;
+      --xp-from: #f59e0b;
+      --xp-to: #ef4444;
+      --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --bg: #0e1118;
+        --surface: #171b26;
+        --surface-2: #1e2331;
+        --border: #272d3d;
+        --ink: #eef1f6;
+        --ink-2: #a9b1c1;
+        --ink-3: #6f788a;
+        --accent: #f5a524;
+        --accent-soft: #2e2414;
+        --bar: #d08010;
+        --grid: #232938;
+        --good: #4ade80;
+        --good-soft: #13291c;
+        --bad: #f87171;
+        --bad-soft: #321819;
+        --warn: #fbbf24;
+        --hot: #fb7a45;
+        --cold: #60a5fa;
+        --shadow: none;
+      }
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0e1118;
+      --surface: #171b26;
+      --surface-2: #1e2331;
+      --border: #272d3d;
+      --ink: #eef1f6;
+      --ink-2: #a9b1c1;
+      --ink-3: #6f788a;
+      --accent: #f5a524;
+      --accent-soft: #2e2414;
+      --bar: #d08010;
+      --grid: #232938;
+      --good: #4ade80;
+      --good-soft: #13291c;
+      --bad: #f87171;
+      --bad-soft: #321819;
+      --warn: #fbbf24;
+      --hot: #fb7a45;
+      --cold: #60a5fa;
+      --shadow: none;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--ink); line-height: 1.4; min-height: 100vh; }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    .num { font-variant-numeric: tabular-nums; }
+
+    /* Kopfzeile */
+    header { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+    header h1 { white-space: nowrap; }
+    .logo { font-size: 1.7rem; line-height: 1; }
+    header h1 { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.01em; }
+    header .spacer { flex: 1; }
+    .pill { display: inline-flex; align-items: center; gap: 7px; font-size: 0.78rem; color: var(--ink-2); background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 5px 11px; }
+    .theme-btn { background: var(--surface); border: 1px solid var(--border); color: var(--ink-2); border-radius: 999px; width: 32px; height: 32px; flex-shrink: 0; cursor: pointer; font-size: 0.95rem; }
+    @media (max-width: 420px) { header .logo { display: none; } .pill { padding: 5px 9px; font-size: 0.72rem; } }
+
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--ink-3); }
+    .dot.connected, .dot.ok { background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
+    .dot.disconnected, .dot.error { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+    .dot.connecting, .dot.unknown { background: var(--warn); animation: blink 1s ease-in-out infinite; }
+    @keyframes blink { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
+
+    /* Raster & Karten */
+    .grid { display: grid; gap: 14px; }
+    .g-hero { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); margin-bottom: 14px; }
+    .g-live { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 14px; }
+    .g-2 { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); margin-bottom: 14px; }
+    .g-sys { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-bottom: 14px; }
+    @media (max-width: 820px) { .g-hero, .g-2 { grid-template-columns: minmax(0, 1fr); } }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; box-shadow: var(--shadow); min-width: 0; }
+    .card h2 { font-size: 0.78rem; font-weight: 650; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+    .card h2 .count { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--ink-3); }
+    .muted { color: var(--ink-3); }
+    .small { font-size: 0.8rem; }
+    .section-title { font-size: 0.78rem; font-weight: 650; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.06em; margin: 26px 0 10px; }
+
+    /* Spieler-Karte */
+    .player { display: flex; gap: 18px; align-items: center; }
+    .lvl { position: relative; width: 88px; height: 88px; flex-shrink: 0; }
+    .lvl svg { width: 88px; height: 88px; transform: rotate(-90deg); }
+    .lvl .track { stroke: var(--surface-2); }
+    .lvl .fill { stroke: url(#xpGrad); transition: stroke-dashoffset .8s ease; }
+    .lvl .inner { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .lvl .inner small { font-size: 0.62rem; color: var(--ink-3); text-transform: uppercase; letter-spacing: .08em; }
+    .lvl .inner b { font-size: 1.9rem; line-height: 1; font-weight: 750; }
+    .player-info { flex: 1; min-width: 0; }
+    .player-title { font-size: 1.25rem; font-weight: 700; margin-bottom: 4px; }
+    .xpbar { height: 10px; background: var(--surface-2); border-radius: 999px; overflow: hidden; margin: 10px 0 6px; }
+    .xpbar span { display: block; height: 100%; background: linear-gradient(90deg, var(--xp-from), var(--xp-to)); border-radius: 999px; transition: width .8s ease; }
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--surface-2); border-radius: 999px; padding: 5px 11px; font-size: 0.8rem; color: var(--ink-2); }
+    .chip b { color: var(--ink); }
+
+    /* Serie */
+    .streak { display: flex; align-items: center; gap: 16px; }
+    .flame { font-size: 3rem; line-height: 1; filter: grayscale(1) opacity(.45); }
+    .flame.on { filter: none; animation: flicker 1.6s ease-in-out infinite; transform-origin: 50% 90%; }
+    @keyframes flicker { 0%, 100% { transform: scale(1) rotate(-2deg) } 50% { transform: scale(1.07) rotate(2deg) } }
+    .big { font-size: 2.6rem; font-weight: 750; line-height: 1; letter-spacing: -0.02em; }
+    .ring-row { display: flex; align-items: center; gap: 14px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+    .ring { width: 52px; height: 52px; transform: rotate(-90deg); flex-shrink: 0; }
+    .ring .track { stroke: var(--surface-2); }
+    .ring .fill { stroke: var(--accent); transition: stroke-dashoffset .8s ease; }
+
+    /* Live-Kacheln */
+    .tile .label { font-size: 0.75rem; color: var(--ink-3); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; display: flex; align-items: center; gap: 6px; }
+    .tile .value { font-size: 1.9rem; font-weight: 700; margin: 6px 0 4px; letter-spacing: -0.01em; }
+    .tile .value small { font-size: 0.95rem; font-weight: 500; color: var(--ink-3); margin-left: 2px; }
+    .tile .sub { font-size: 0.78rem; color: var(--ink-3); }
+    .thermo { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-top: 10px; }
+    .thermo span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--cold), var(--accent), var(--hot)); background-size: 100vw 100%; transition: width .8s ease; }
+    .fan { display: inline-block; }
+    .fan.spin { animation: spin 1.2s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg) } }
+    .state { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; font-weight: 600; border-radius: 999px; padding: 2px 9px; }
+    .state.on { background: var(--good-soft); color: var(--good); }
+    .state.off { background: var(--surface-2); color: var(--ink-3); }
+
+    /* Diagramm */
+    .chart { position: relative; }
+    .chart svg { display: block; width: 100%; overflow: visible; }
+    .chart text { fill: var(--ink-3); font-size: 11px; font-family: inherit; }
+    .chart .gridline { stroke: var(--grid); stroke-width: 1; }
+    .chart .bar { fill: var(--bar); }
+    .chart .bar.today { fill: var(--accent); }
+    .chart .hit { fill: transparent; cursor: default; }
+    .chart .hit:hover + .hl, .chart .hl.active { opacity: 1; }
+    .chart .hl { fill: var(--ink); opacity: 0; pointer-events: none; }
+    .chart .goal { stroke: var(--ink-3); stroke-width: 1; }
+    .chart .goal-label { fill: var(--ink-2); font-weight: 600; }
+    .chart .val { fill: var(--ink); font-weight: 650; }
+    .tooltip { position: absolute; pointer-events: none; background: var(--ink); color: var(--surface); font-size: 0.78rem; padding: 7px 10px; border-radius: 8px; white-space: nowrap; transform: translate(-50%, calc(-100% - 8px)); opacity: 0; transition: opacity .12s; z-index: 5; }
+    .tooltip.show { opacity: 1; }
+    .table-toggle { margin-top: 10px; }
+    .table-toggle summary { font-size: 0.78rem; color: var(--ink-3); cursor: pointer; }
+
+    /* Rekorde */
+    .records { display: grid; gap: 10px; }
+    .record { display: flex; align-items: center; gap: 12px; }
+    .record .ico { width: 36px; height: 36px; border-radius: 10px; background: var(--accent-soft); display: grid; place-items: center; font-size: 1.1rem; flex-shrink: 0; }
+    .record .what { flex: 1; min-width: 0; font-size: 0.85rem; color: var(--ink-2); }
+    .record .what small { display: block; color: var(--ink-3); font-size: 0.72rem; }
+    .record .rv { font-weight: 700; font-size: 1.05rem; white-space: nowrap; }
+
+    /* Abzeichen */
+    .badges { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+    .badge { position: relative; border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--surface); display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .badge .bi { font-size: 1.8rem; line-height: 1; margin-bottom: 4px; }
+    .badge .bt { font-weight: 650; font-size: 0.86rem; }
+    .badge .bd { font-size: 0.74rem; color: var(--ink-3); }
+    .badge .bx { position: absolute; top: 10px; right: 10px; font-size: 0.68rem; font-weight: 700; color: var(--accent); }
+    .badge.locked .bi { filter: grayscale(1) opacity(.4); }
+    .badge.locked .bt { color: var(--ink-2); }
+    .badge.unlocked { background: linear-gradient(160deg, var(--accent-soft), var(--surface) 70%); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+    .badge .prog { height: 4px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-top: 6px; }
+    .badge .prog span { display: block; height: 100%; background: var(--ink-3); border-radius: 999px; }
+    .badge .when { font-size: 0.7rem; color: var(--ink-3); margin-top: 6px; }
+
+    /* Ereignisse */
+    .feed { display: grid; gap: 2px; }
+    .ev { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .ev:last-child { border-bottom: 0; }
+    .ev .ei { font-size: 1.2rem; line-height: 1.2; }
+    .ev .et { font-weight: 600; font-size: 0.85rem; }
+    .ev .ed { font-size: 0.76rem; color: var(--ink-3); }
+
+    /* System */
+    .sys .sub { font-size: 0.78rem; color: var(--ink-2); margin-bottom: 8px; word-break: break-all; }
+    .sys .status-row { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 0.9rem; }
+    .sys .note { font-size: 0.74rem; color: var(--ink-3); margin-top: 6px; }
+    .sys .note.bad { color: var(--bad); }
+
+    /* Tabelle */
+    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+    .toolbar input { flex: 1; min-width: 180px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+    thead th { text-align: left; padding: 8px 10px; color: var(--ink-3); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    tbody td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    tbody tr:hover td { background: var(--surface-2); }
+    tbody tr.dim td { opacity: .5; }
+    td.v { font-weight: 600; white-space: nowrap; }
+    td.id { font-size: 0.7rem; color: var(--ink-3); word-break: break-all; }
+    td.age { color: var(--ink-3); white-space: nowrap; }
+    @media (max-width: 640px) { .col-id { display: none; } }
+    .tag { font-size: 0.66rem; padding: 2px 8px; border-radius: 999px; font-weight: 650; white-space: nowrap; }
+    .tag.on { background: var(--good-soft); color: var(--good); }
+    .tag.off { background: var(--surface-2); color: var(--ink-3); }
+    .tag.bad { background: var(--bad-soft); color: var(--bad); }
+    .tag.game { background: var(--accent-soft); color: var(--accent); }
+
+    /* Einstellungen */
+    details.settings { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 14px; box-shadow: var(--shadow); }
+    details.settings > summary { cursor: pointer; padding: 14px 18px; font-size: 0.85rem; font-weight: 650; color: var(--ink-2); user-select: none; list-style: none; display: flex; align-items: center; gap: 8px; }
+    details.settings > summary::-webkit-details-marker { display: none; }
+    details.settings > summary::before { content: '▸'; transition: transform .15s; }
+    details.settings[open] > summary::before { transform: rotate(90deg); }
+    .form { padding: 0 18px 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+    .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    .field label { font-size: 0.7rem; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 650; }
+    .field .hint { font-size: 0.7rem; color: var(--ink-3); }
+    .check { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--ink-2); }
+    input, select { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--ink); font-size: 0.84rem; font-family: inherit; width: 100%; min-width: 0; }
+    input.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 0; border-color: var(--accent); }
+    input[type=checkbox] { width: auto; }
+    .actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    button.primary { background: var(--accent); border: 0; border-radius: 8px; color: #fff; padding: 9px 18px; font-size: 0.84rem; font-weight: 650; cursor: pointer; }
+    button.primary:hover { filter: brightness(1.08); }
+    button.primary:disabled { opacity: .5; cursor: default; }
+    .msg { font-size: 0.8rem; }
+    .msg.ok { color: var(--good); }
+    .msg.bad { color: var(--bad); }
+
+    /* Einrichtungs-Hinweis */
+    .setup { display: flex; gap: 14px; align-items: center; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); border-radius: 14px; padding: 14px 18px; margin-bottom: 14px; }
+    .setup .si { font-size: 1.8rem; }
+    .setup p { font-size: 0.86rem; color: var(--ink-2); }
+    .setup button { margin-left: auto; }
+
+    /* Toasts & Konfetti */
+    .toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 10px; z-index: 50; max-width: min(360px, calc(100vw - 32px)); }
+    .toast { display: flex; gap: 12px; align-items: center; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 12px; padding: 12px 14px; box-shadow: 0 10px 30px rgba(0, 0, 0, .25); animation: pop .35s cubic-bezier(.2, 1.4, .4, 1); }
+    .toast .ti { font-size: 1.8rem; }
+    .toast b { display: block; font-size: 0.9rem; }
+    .toast span { font-size: 0.78rem; color: var(--ink-2); }
+    .toast.out { animation: fade .4s ease forwards; }
+    @media (max-width: 640px) { .toasts { left: 16px; right: 16px; max-width: none; } .toasts .toast:nth-last-child(n+3) { display: none; } }
+    @keyframes pop { from { transform: translateY(20px) scale(.9); opacity: 0 } }
+    @keyframes fade { to { transform: translateX(30px); opacity: 0 } }
+    .confetti { position: fixed; top: -12px; width: 8px; height: 12px; z-index: 60; pointer-events: none; border-radius: 2px; animation: fall linear forwards; }
+    @keyframes fall { to { transform: translateY(105vh) rotate(720deg); } }
+
+    .empty { color: var(--ink-3); font-size: 0.85rem; padding: 10px 0; }
+    .offline { display: none; background: var(--bad-soft); color: var(--bad); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 0.85rem; }
+    .offline.show { display: block; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs><linearGradient id="xpGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f59e0b"/><stop offset="1" stop-color="#ef4444"/></linearGradient></defs>
+</svg>
+
+<div class="wrap">
+  <header>
+    <span class="logo">☀️</span>
+    <h1>VBus Monitor</h1>
+    <span class="spacer"></span>
+    <span class="pill"><span class="dot unknown" id="liveDot"></span><span id="liveText">Verbinde…</span></span>
+    <button class="theme-btn" id="themeBtn" title="Hell/Dunkel umschalten" aria-label="Hell/Dunkel umschalten">◐</button>
+  </header>
+
+  <div class="offline" id="offline">Verbindung zum Server unterbrochen – Werte sind nicht aktuell.</div>
+
+  <div id="setup"></div>
+
+  <div class="grid g-hero">
+    <div class="card" id="player"></div>
+    <div class="card" id="streak"></div>
+  </div>
+
+  <div class="grid g-live" id="live"></div>
+
+  <div class="grid g-2">
+    <div class="card">
+      <h2>☀️ Solarbetrieb · letzte 14 Tage</h2>
+      <div class="chart" id="chart"><div class="tooltip" id="tip"></div></div>
+      <details class="table-toggle"><summary>Als Tabelle anzeigen</summary><div class="table-wrap" id="chartTable"></div></details>
+    </div>
+    <div class="card">
+      <h2>🏅 Rekorde</h2>
+      <div class="records" id="records"></div>
+    </div>
+  </div>
+
+  <div class="grid g-2">
+    <div class="card">
+      <h2>🎖️ Abzeichen <span class="count" id="badgeCount"></span></h2>
+      <div class="badges" id="badges"></div>
+    </div>
+    <div class="card">
+      <h2>📣 Ereignisse</h2>
+      <div class="feed" id="feed"></div>
+    </div>
+  </div>
+
+  <div class="section-title">System</div>
+  <div class="grid g-sys" id="system"></div>
+
+  <details class="settings" id="gameSettings">
+    <summary>🎮 Spiel-Zuordnung</summary>
+    <div class="form" id="gameForm">
+      <div class="field"><label for="g-collector">Kollektor</label><select id="g-collector" data-units="DegreesCelsius"></select><span class="hint">Temperaturfühler am Kollektor</span></div>
+      <div class="field"><label for="g-storage">Speicher</label><select id="g-storage" data-units="DegreesCelsius"></select><span class="hint">Speichertemperatur (z. B. Speicher unten/oben)</span></div>
+      <div class="field"><label for="g-pump">Solarpumpe</label><select id="g-pump" data-units="Percent,Boolean"></select><span class="hint">Relais der Solarpumpe (Drehzahl &gt; 0 % = läuft)</span></div>
+      <div class="field"><label for="g-irradiation">Einstrahlung (optional)</label><select id="g-irradiation" data-units="WattsPerSquareMeter"></select><span class="hint">nur mit Einstrahlungssensor (z. B. CS10)</span></div>
+      <div class="field"><label for="g-sunny">Sonnentag ab (Minuten)</label><input id="g-sunny" type="number" min="1" step="1"><span class="hint">Pumpenlaufzeit, ab der ein Tag als Sonnentag zählt</span></div>
+      <div class="actions"><button class="primary" id="gameSave">Speichern</button><span class="msg" id="gameMsg"></span></div>
+    </div>
+  </details>
+
+  <details class="settings" id="influxSettings">
+    <summary>🗄️ InfluxDB-Einstellungen</summary>
+    <div class="form" id="influxForm">
+      <div class="field"><label for="f-url">URL</label><input class="mono" id="f-url" spellcheck="false"><span class="hint">z. B. http://influxdb.example:8086</span></div>
+      <div class="field"><label for="f-bucket">Bucket</label><input class="mono" id="f-bucket" spellcheck="false"><span class="hint">bei InfluxDB 1.x: datenbank/autogen</span></div>
+      <div class="field"><label for="f-token">Token</label><input class="mono" id="f-token" type="password" autocomplete="off" spellcheck="false"><label class="check"><input type="checkbox" id="f-token-clear"> gespeichertes Token entfernen</label></div>
+      <div class="field"><label for="f-org">Org</label><input class="mono" id="f-org" spellcheck="false"><span class="hint">bei InfluxDB 1.x leer</span></div>
+      <div class="field"><label for="f-namespace">Namespace</label><input class="mono" id="f-namespace" spellcheck="false"><span class="hint">Präfix der Measurement-Namen</span></div>
+      <div class="field"><label for="f-from">from-Feld</label><input class="mono" id="f-from" spellcheck="false"><span class="hint">Inhalt des Feldes „from"</span></div>
+      <div class="actions"><button class="primary" id="influxSave">Speichern und anwenden</button><span class="msg" id="influxMsg"></span></div>
+    </div>
+  </details>
+
+  <div class="section-title">Datenpunkte</div>
+  <div class="card">
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Feld oder ID filtern…" aria-label="Datenpunkte filtern">
+      <span class="small muted num" id="meta">—</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Feld</th><th>Wert</th><th>InfluxDB</th><th class="col-id">Datenpunkt-ID</th><th>Alter</th></tr></thead>
+        <tbody id="tbody"><tr><td colspan="5" class="empty">Warte auf Daten…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script>
+'use strict';
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* privat/blockiert */ } },
+};
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+let data = null;
+let clockOffset = 0;          // Serverzeit - Browserzeit, damit Altersangaben nicht von der Browser-Uhr abhaengen
+const serverNow = () => Date.now() + clockOffset;
+
+/* ---------- Formatierung ---------- */
+const nf1 = new Intl.NumberFormat('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const nf0 = new Intl.NumberFormat('de-DE', { maximumFractionDigits: 0 });
+const fmtNum = (v, d = 1) => (typeof v === 'number' && isFinite(v)) ? (d ? nf1.format(v) : nf0.format(v)) : '–';
+const fmtDur = s => {
+  const m = Math.floor((s || 0) / 60);
+  return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`;
+};
+const fmtDate = ts => ts ? new Date(ts).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
+const fmtDay = key => {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+};
+function age(ts) {
+  if (!ts) return '–';
+  const s = Math.max(0, Math.floor((serverNow() - new Date(ts)) / 1000));
+  if (s < 60) return s + ' s';
+  if (s < 3600) return Math.floor(s / 60) + ' min';
+  if (s < 86400) return Math.floor(s / 3600) + ' h';
+  return Math.floor(s / 86400) + ' d';
+}
+function fmtUptime(ms) {
+  const s = Math.floor(ms / 1000), d = Math.floor(s / 86400);
+  const hms = [Math.floor((s % 86400) / 3600), Math.floor((s % 3600) / 60), s % 60].map(n => String(n).padStart(2, '0')).join(':');
+  return d ? d + ' d ' + hms : hms;
+}
+const portLabel = s => s === 'connected' ? 'Verbunden' : s === 'connecting' ? 'Verbinde…' : 'Getrennt';
+const influxLabel = s => s === 'ok' ? 'Erreichbar' : s === 'error' ? 'Nicht erreichbar' : 'Unbekannt';
+
+/* Setzt innerHTML nur bei Aenderung - verhindert Flackern und verlorene Hover-Zustaende */
+function put(el, html) {
+  if (typeof el === 'string') el = $(el);
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }
+}
+
+/* ---------- Theme ---------- */
+(function initTheme() {
+  const saved = store.get('vbus.theme');
+  if (saved === 'light' || saved === 'dark') document.documentElement.dataset.theme = saved;
+  $('themeBtn').addEventListener('click', () => {
+    const isDark = document.documentElement.dataset.theme
+      ? document.documentElement.dataset.theme === 'dark'
+      : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const next = isDark ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    store.set('vbus.theme', next);
+  });
+})();
+
+/* ---------- Spieler & Serie ---------- */
+function ringSvg(cls, size, stroke, fraction) {
+  const r = (size - stroke) / 2, c = 2 * Math.PI * r;
+  const off = c * (1 - Math.max(0, Math.min(1, fraction)));
+  return `<svg class="${cls}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
+    <circle class="track" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke-width="${stroke}"/>
+    <circle class="fill" cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke-width="${stroke}" stroke-linecap="round" stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}"/>
+  </svg>`;
+}
+
+function renderPlayer(g) {
+  const span = g.levelCeil - g.levelFloor;
+  const frac = span > 0 ? (g.xp - g.levelFloor) / span : 0;
+  const unlocked = g.achievements.filter(a => a.unlockedAt).length;
+  put('player', `
+    <h2>🎮 Spielstand</h2>
+    <div class="player">
+      <div class="lvl">${ringSvg('', 88, 8, frac)}<div class="inner"><small>Level</small><b class="num">${g.level}</b></div></div>
+      <div class="player-info">
+        <div class="player-title">${esc(g.levelTitle)}</div>
+        <div class="small muted num">${fmtNum(g.xp, 0)} XP · noch ${fmtNum(g.levelCeil - g.xp, 0)} XP bis Level ${g.level + 1}</div>
+        <div class="xpbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(frac * 100)}" aria-label="Fortschritt zum nächsten Level"><span style="width:${(frac * 100).toFixed(1)}%"></span></div>
+        <div class="chips">
+          <span class="chip">⏱️ <b class="num">${fmtDur(g.totals.pumpSeconds)}</b> Solarbetrieb</span>
+          <span class="chip">☀️ <b class="num">${g.totals.sunnyDays}</b> Sonnentage</span>
+          <span class="chip">🎖️ <b class="num">${unlocked}/${g.achievements.length}</b> Abzeichen</span>
+        </div>
+      </div>
+    </div>
+    <div class="small muted" style="margin-top:12px">1 XP je Minute Solarbetrieb, Bonus-XP für Abzeichen.</div>`);
+}
+
+function renderStreak(g) {
+  const goal = g.settings.sunnyDayMinutes * 60;
+  const frac = goal ? g.today.pumpSeconds / goal : 0;
+  const cur = g.streak.current;
+  put('streak', `
+    <h2>🔥 Sonnenserie</h2>
+    <div class="streak">
+      <div class="flame ${cur > 0 ? 'on' : ''}" aria-hidden="true">🔥</div>
+      <div>
+        <div class="big num">${cur}</div>
+        <div class="small muted">${cur === 1 ? 'Sonnentag' : 'Sonnentage'} in Folge · Bestwert ${g.streak.best}</div>
+      </div>
+    </div>
+    <div class="ring-row">
+      ${ringSvg('ring', 52, 6, frac)}
+      <div>
+        <div style="font-weight:650">${g.today.sunny ? '✅ Heute ist ein Sonnentag!' : 'Heute: ' + fmtDur(g.today.pumpSeconds) + ' von ' + g.settings.sunnyDayMinutes + ' min'}</div>
+        <div class="small muted">${g.today.sunny ? 'Die Serie ist für heute gesichert.' : 'Ab ' + g.settings.sunnyDayMinutes + ' min Solarbetrieb zählt der Tag.'}</div>
+      </div>
+    </div>`);
+}
+
+/* ---------- Live-Kacheln ---------- */
+function tempTile(label, icon, v, todayMax, scaleMax) {
+  const w = (typeof v === 'number') ? Math.max(2, Math.min(100, v / scaleMax * 100)) : 0;
+  return `<div class="card tile">
+    <div class="label">${icon} ${label}</div>
+    <div class="value num">${fmtNum(v)}<small>°C</small></div>
+    <div class="sub num">Heute max. ${fmtNum(todayMax)} °C</div>
+    <div class="thermo"><span style="width:${w.toFixed(1)}%"></span></div>
+  </div>`;
+}
+
+function renderLive(g) {
+  const s = g.settings, L = g.live, T = g.today;
+  const tiles = [];
+  if (s.collector) tiles.push(tempTile('Kollektor', '🌡️', L.collector, T.collectorMax, 120));
+  if (s.storage) tiles.push(tempTile('Speicher', '🛢️', L.storage, T.storageMax, 90));
+  if (s.collector && s.storage) {
+    const dT = (typeof L.collector === 'number' && typeof L.storage === 'number') ? L.collector - L.storage : null;
+    tiles.push(`<div class="card tile">
+      <div class="label">↕️ Temperaturdifferenz</div>
+      <div class="value num">${dT === null ? '–' : (dT > 0 ? '+' : '') + fmtNum(dT)}<small>K</small></div>
+      <div class="sub">Kollektor minus Speicher</div>
+    </div>`);
+  }
+  if (s.pump) {
+    tiles.push(`<div class="card tile">
+      <div class="label"><span class="fan ${L.pumpOn ? 'spin' : ''}">✇</span> Solarpumpe</div>
+      <div class="value num">${L.pump === null ? '–' : fmtNum(L.pump, 0)}<small>%</small></div>
+      <div class="sub"><span class="state ${L.pumpOn ? 'on' : 'off'}">${L.pumpOn ? '● läuft' : '○ aus'}</span> · heute ${fmtDur(T.pumpSeconds)}</div>
+    </div>`);
+  }
+  if (s.irradiation) {
+    tiles.push(`<div class="card tile">
+      <div class="label">🔆 Einstrahlung</div>
+      <div class="value num">${fmtNum(L.irradiation, 0)}<small>W/m²</small></div>
+      <div class="sub num">Heute ${fmtNum(T.irradiationWh / 1000)} kWh/m² · max. ${fmtNum(T.irradiationMax, 0)} W/m²</div>
+    </div>`);
+  }
+  put('live', tiles.join(''));
+}
+
+/* ---------- Diagramm ---------- */
+function niceStepHours(maxH) {
+  for (const st of [0.5, 1, 2, 3, 4, 6]) if (maxH / st <= 5) return st;
+  return 12;
+}
+
+function renderChart(g) {
+  const el = $('chart');
+  const W = Math.max(280, el.clientWidth || 600), H = 210;
+  const pad = { l: 34, r: 86, t: 22, b: 26 };
+  const days = g.days;
+  const goalH = g.settings.sunnyDayMinutes / 60;
+  const maxH = Math.max(goalH * 1.15, ...days.map(d => d.pumpSeconds / 3600), 1);
+  const step = niceStepHours(maxH);
+  const top = Math.ceil(maxH / step) * step;
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  const band = iw / days.length;
+  const bw = Math.min(24, band - 2);
+  const y = h => pad.t + ih - (h / top) * ih;
+
+  let svg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Pumpenlaufzeit pro Tag, letzte 14 Tage">`;
+  for (let v = 0; v <= top + 1e-9; v += step) {
+    svg += `<line class="gridline" x1="${pad.l}" x2="${W - pad.r}" y1="${y(v)}" y2="${y(v)}"/>`;
+    svg += `<text x="${pad.l - 6}" y="${y(v) + 4}" text-anchor="end">${v % 1 ? nf1.format(v) : v} h</text>`;
+  }
+  // Ziellinie Sonnentag
+  svg += `<line class="goal" x1="${pad.l}" x2="${W - pad.r}" y1="${y(goalH)}" y2="${y(goalH)}"/>`;
+  svg += `<text class="goal-label" x="${W - pad.r + 6}" y="${y(goalH) + 4}">☀ Sonnentag</text>`;
+
+  // Hoechster Tag bekommt das einzige Direkt-Label
+  let maxIdx = -1;
+  days.forEach((d, i) => { if (d.pumpSeconds > 0 && (maxIdx < 0 || d.pumpSeconds > days[maxIdx].pumpSeconds)) maxIdx = i; });
+
+  const narrow = band < 34;
+  days.forEach((d, i) => {
+    const cx = pad.l + band * i + band / 2;
+    const h = d.pumpSeconds / 3600;
+    const by = y(h), bh = Math.max(0, pad.t + ih - by);
+    const isToday = i === days.length - 1;
+    if (bh > 0.5) {
+      const r = Math.min(4, bh, bw / 2);
+      // oben abgerundet, an der Basislinie eckig
+      svg += `<path class="bar ${isToday ? 'today' : ''}" d="M${cx - bw / 2},${pad.t + ih} V${by + r} Q${cx - bw / 2},${by} ${cx - bw / 2 + r},${by} H${cx + bw / 2 - r} Q${cx + bw / 2},${by} ${cx + bw / 2},${by + r} V${pad.t + ih} Z"/>`;
+    }
+    if (i === maxIdx) svg += `<text class="val" x="${cx}" y="${by - 6}" text-anchor="middle">${fmtDur(d.pumpSeconds).replace(' min', '′')}</text>`;
+    svg += `<rect class="hit" data-i="${i}" x="${cx - band / 2}" y="${pad.t}" width="${band}" height="${ih}"/>`;
+    svg += `<rect class="hl" x="${cx - band / 2}" y="${pad.t}" width="${band}" height="${ih}" opacity="0" style="fill-opacity:.06"/>`;
+    if (!narrow || i % 2 === (days.length - 1) % 2) {
+      const [, m, dd] = d.day.split('-');
+      svg += `<text x="${cx}" y="${H - 8}" text-anchor="middle"${isToday ? ' style="font-weight:700;fill:var(--ink-2)"' : ''}>${isToday ? 'heute' : `${+dd}.${+m}.`}</text>`;
+    }
+  });
+  svg += '</svg>';
+
+  const tip = $('tip');
+  const key = svg;
+  if (el._key !== key) {
+    el._key = key;
+    el.querySelector('svg')?.remove();
+    el.insertAdjacentHTML('afterbegin', svg);
+    el.querySelectorAll('.hit').forEach(r => {
+      const show = () => {
+        const d = days[+r.dataset.i];
+        tip.innerHTML = `<b>${esc(fmtDay(d.day))}</b><br>${fmtDur(d.pumpSeconds)} Solarbetrieb${d.collectorMax !== null ? ' · Kollektor max. ' + fmtNum(d.collectorMax) + ' °C' : ''}${d.sunny ? '<br>☀ Sonnentag' : ''}`;
+        const box = r.getBBox();
+        const half = tip.offsetWidth / 2;
+        tip.style.left = Math.min(Math.max(box.x + box.width / 2, half), el.clientWidth - half) + 'px';
+        tip.style.top = Math.max(y(d.pumpSeconds / 3600), pad.t + 30) + 'px';
+        tip.classList.add('show');
+      };
+      r.addEventListener('mouseenter', show);
+      r.addEventListener('touchstart', show, { passive: true });
+      r.addEventListener('mouseleave', () => tip.classList.remove('show'));
+    });
+  }
+
+  put('chartTable', `<table><thead><tr><th>Tag</th><th>Solarbetrieb</th><th>Kollektor max.</th><th>Sonnentag</th></tr></thead><tbody>${
+    days.slice().reverse().map(d => `<tr><td>${esc(fmtDay(d.day))}</td><td class="num">${fmtDur(d.pumpSeconds)}</td><td class="num">${d.collectorMax !== null ? fmtNum(d.collectorMax) + ' °C' : '–'}</td><td>${d.sunny ? '☀ ja' : '–'}</td></tr>`).join('')
+  }</tbody></table>`);
+}
+
+/* ---------- Rekorde, Abzeichen, Ereignisse ---------- */
+function renderRecords(g) {
+  const r = g.records, s = g.settings, rows = [];
+  const row = (ico, what, val, at) => `<div class="record"><div class="ico">${ico}</div><div class="what">${what}<small>${at ? 'am ' + fmtDate(at) : 'noch kein Wert'}</small></div><div class="rv num">${val}</div></div>`;
+  if (s.collector) rows.push(row('🌡️', 'Kollektor-Höchstwert', r.collectorMax.value !== null ? fmtNum(r.collectorMax.value) + ' °C' : '–', r.collectorMax.at));
+  if (s.storage) rows.push(row('🛢️', 'Speicher-Höchstwert', r.storageMax.value !== null ? fmtNum(r.storageMax.value) + ' °C' : '–', r.storageMax.at));
+  if (s.pump) rows.push(row('⏱️', 'Längster Solartag', r.pumpDay.value ? fmtDur(r.pumpDay.value) : '–', r.pumpDay.at));
+  if (s.pump) rows.push(row('🔥', 'Längste Sonnenserie', r.streak.value ? r.streak.value + ' Tage' : '–', r.streak.at));
+  if (s.irradiation) rows.push(row('🔆', 'Stärkste Einstrahlung', r.irradiationMax.value !== null ? fmtNum(r.irradiationMax.value, 0) + ' W/m²' : '–', r.irradiationMax.at));
+  put('records', rows.join('') || '<div class="empty">Ordne zuerst die Datenpunkte zu.</div>');
+}
+
+function renderBadges(g) {
+  const list = g.achievements.slice().sort((a, b) => (!!b.unlockedAt - !!a.unlockedAt) || (b.unlockedAt || 0) - (a.unlockedAt || 0) || b.progress - a.progress);
+  $('badgeCount').textContent = `${g.achievements.filter(a => a.unlockedAt).length} von ${g.achievements.length}`;
+  put('badges', list.map(a => `
+    <div class="badge ${a.unlockedAt ? 'unlocked' : 'locked'}" title="${esc(a.desc)}">
+      <span class="bx">+${a.xp} XP</span>
+      <div class="bi">${a.icon}</div>
+      <div class="bt">${esc(a.title)}</div>
+      <div class="bd">${esc(a.desc)}</div>
+      ${a.unlockedAt
+        ? `<div class="when">✓ ${fmtDate(a.unlockedAt)}</div>`
+        : `<div class="prog" aria-label="Fortschritt ${Math.round(a.progress * 100)} %"><span style="width:${(a.progress * 100).toFixed(0)}%"></span></div>`}
+    </div>`).join('') || '<div class="empty">Ordne zuerst die Datenpunkte zu.</div>');
+}
+
+function renderFeed(g) {
+  put('feed', g.events.map(e => `
+    <div class="ev"><div class="ei">${e.icon}</div><div><div class="et">${esc(e.title)}</div><div class="ed">${esc(e.text)} · vor ${age(e.at)}</div></div></div>`).join('')
+    || '<div class="empty">Noch keine Ereignisse – die Sonne wird’s richten.</div>');
+}
+
+/* ---------- Toasts & Konfetti ---------- */
+function toast(e) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = `<div class="ti">${e.icon}</div><div><b>${esc(e.title)}</b><span>${esc(e.text)}</span></div>`;
+  $('toasts').appendChild(el);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 450); }, 6000);
+}
+function confetti() {
+  if (reducedMotion) return;
+  const colors = ['#f59e0b', '#ef4444', '#22c55e', '#3b82f6', '#a855f7', '#facc15'];
+  for (let i = 0; i < 80; i++) {
+    const c = document.createElement('div');
+    c.className = 'confetti';
+    c.style.left = Math.random() * 100 + 'vw';
+    c.style.background = colors[i % colors.length];
+    c.style.animationDuration = 1.8 + Math.random() * 1.6 + 's';
+    c.style.animationDelay = Math.random() * 0.4 + 's';
+    document.body.appendChild(c);
+    setTimeout(() => c.remove(), 4000);
+  }
+}
+function announce(g) {
+  const maxId = g.events.reduce((m, e) => Math.max(m, e.id), 0);
+  const seenRaw = store.get('vbus.lastEvent');
+  const seen = seenRaw === null ? maxId : +seenRaw;     // erster Besuch: alte Ereignisse nicht nachspielen
+  const fresh = g.events.filter(e => e.id > seen).reverse();
+  fresh.slice(-3).forEach(toast);
+  if (fresh.some(e => e.type === 'achievement' || e.type === 'level' || e.type === 'record')) confetti();
+  store.set('vbus.lastEvent', String(maxId));
+}
+
+/* ---------- System & Datenpunkte ---------- */
+function renderSystem(d) {
+  const inf = d.influx;
+  const ports = Object.entries(d.ports).map(([ch, p]) => `
+    <div class="card sys">
+      <h2>🔌 VBus Kanal ${esc(ch)}</h2>
+      <div class="sub mono">${esc(p.path)}</div>
+      <div class="status-row"><span class="dot ${esc(p.status)}"></span>${portLabel(p.status)}</div>
+      <div class="note">${p.lastSeen ? 'Letzte Daten vor ' + age(p.lastSeen) : 'noch keine Daten'} · ${p.clients} TCP-Client(s)</div>
+    </div>`).join('');
+  const influx = `
+    <div class="card sys">
+      <h2>🗄️ InfluxDB</h2>
+      <div class="sub mono">${esc(inf.url)} · ${esc(inf.bucket)}</div>
+      <div class="status-row"><span class="dot ${esc(inf.status)}"></span>${influxLabel(inf.status)}${inf.version ? ' <span class="muted small" style="font-weight:400">v' + esc(inf.version) + '</span>' : ''}</div>
+      <div class="note">Letzter Schreibvorgang vor ${age(inf.lastWrite)} · ${fmtNum(inf.writes, 0)} Punkte${inf.failures ? ' · ' + inf.failures + ' Fehlversuche' : ''}</div>
+      ${inf.lastError ? '<div class="note bad">' + esc(inf.lastError) + '</div>' : ''}
+    </div>`;
+  const host = `
+    <div class="card sys">
+      <h2>🖥️ Dienst</h2>
+      <div class="sub">Laufzeit</div>
+      <div class="status-row num">${fmtUptime(d.uptime)}</div>
+      <div class="note">${Object.keys(d.fields).length} Datenpunkte empfangen</div>
+    </div>`;
+  put('system', ports + influx + host);
+}
+
+function renderFields(d) {
+  const q = $('search').value.trim().toLowerCase();
+  const gameIds = new Set(['collector', 'storage', 'pump', 'irradiation'].map(k => d.game.settings[k]).filter(Boolean));
+  const all = Object.values(d.fields).sort((a, b) => (b.logged - a.logged) || a.name.localeCompare(b.name, 'de'));
+  const entries = q ? all.filter(f => f.name.toLowerCase().includes(q) || f.objectId.toLowerCase().includes(q)) : all;
+  put('tbody', entries.length ? entries.map(f => `
+    <tr class="${f.logged ? '' : 'dim'}">
+      <td>${esc(f.name)} ${gameIds.has(f.objectId) ? '<span class="tag game">🎮 Spiel</span>' : ''}</td>
+      <td class="v num">${esc(f.textValue)}</td>
+      <td>${f.logged && !f.written ? '<span class="tag bad" title="Sensor offen/Kurzschluss – Wert wird nicht geschrieben">Sensorfehler</span>' : `<span class="tag ${f.logged ? 'on' : 'off'}">${f.logged ? 'geschrieben' : 'nur Anzeige'}</span>`}</td>
+      <td class="id mono col-id">${esc(f.objectId)}</td>
+      <td class="age num">${age(f.timestamp)}</td>
+    </tr>`).join('') : `<tr><td colspan="5" class="empty">${all.length ? 'Kein Treffer.' : 'Noch keine Daten empfangen…'}</td></tr>`);
+  const written = all.filter(f => f.logged).length;
+  $('meta').textContent = `${all.length} Datenpunkte · ${written} nach InfluxDB · Uptime ${fmtUptime(d.uptime)}`;
+}
+$('search').addEventListener('input', () => data && renderFields(data));
+
+/* ---------- Einstellungen ---------- */
+let gameTouched = false, influxTouched = false;
+$('gameForm').addEventListener('input', () => { gameTouched = true; });
+$('influxForm').addEventListener('input', () => { influxTouched = true; });
+
+function fillGameForm(d) {
+  if (gameTouched) return;
+  const fields = Object.values(d.fields);
+  for (const key of ['collector', 'storage', 'pump', 'irradiation']) {
+    const sel = $('g-' + key);
+    const units = sel.dataset.units.split(',');
+    const current = d.game.settings[key] || '';
+    const opts = fields.filter(f => units.includes(f.unit)).sort((a, b) => a.name.localeCompare(b.name, 'de'));
+    let html = '<option value="">— nicht zugeordnet —</option>';
+    html += opts.map(f => `<option value="${esc(f.objectId)}"${f.objectId === current ? ' selected' : ''}>${esc(f.name)} (${esc(f.textValue)})</option>`).join('');
+    if (current && !opts.some(f => f.objectId === current)) html += `<option value="${esc(current)}" selected>${esc(current)} (nicht empfangen)</option>`;
+    put(sel, html);
+  }
+  $('g-sunny').value = d.game.settings.sunnyDayMinutes;
+}
+
+function fillInfluxForm(inf) {
+  if (influxTouched) return;
+  for (const k of ['url', 'bucket', 'org', 'namespace', 'from']) $('f-' + k).value = inf[k] ?? '';
+  $('f-token').value = '';
+  $('f-token').placeholder = inf.tokenSet ? '•••••• gespeichert – leer lassen = unverändert' : 'kein Token gesetzt';
+  $('f-token-clear').checked = false;
+  $('f-token-clear').parentElement.style.display = inf.tokenSet ? '' : 'none';
+}
+
+async function postJson(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(out.error || ('HTTP ' + res.status));
+  return out;
+}
+
+function flash(msgEl, ok, text) {
+  msgEl.className = 'msg ' + (ok ? 'ok' : 'bad');
+  msgEl.textContent = text;
+  if (ok) setTimeout(() => { if (msgEl.textContent === text) { msgEl.textContent = ''; msgEl.className = 'msg'; } }, 6000);
+}
+
+$('gameSave').addEventListener('click', async () => {
+  const btn = $('gameSave');
+  const body = { sunnyDayMinutes: Number($('g-sunny').value) };
+  for (const k of ['collector', 'storage', 'pump', 'irradiation']) body[k] = $('g-' + k).value || null;
+  btn.disabled = true;
+  try {
+    await postJson('/api/game', body);
+    gameTouched = false;
+    flash($('gameMsg'), true, 'Gespeichert.');
+    refresh();
+  } catch (e) {
+    flash($('gameMsg'), false, 'Fehler: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('influxSave').addEventListener('click', async () => {
+  const btn = $('influxSave');
+  const body = {};
+  for (const k of ['url', 'bucket', 'org', 'namespace', 'from']) body[k] = $('f-' + k).value.trim();
+  const token = $('f-token').value.trim();
+  if (token) body.token = token;
+  else if ($('f-token-clear').checked) body.token = '';
+  btn.disabled = true;
+  $('influxMsg').className = 'msg';
+  $('influxMsg').textContent = 'Wird angewendet…';
+  try {
+    const out = await postJson('/api/config', body);
+    influxTouched = false;
+    flash($('influxMsg'), true, 'Gespeichert – InfluxDB ' + influxLabel(out.influx.status).toLowerCase() + '.');
+    refresh();
+  } catch (e) {
+    flash($('influxMsg'), false, 'Fehler: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function renderSetup(g) {
+  put('setup', g.configured ? '' : `
+    <div class="setup">
+      <div class="si">🎮</div>
+      <p><b>Spiel einrichten:</b> Ordne Kollektor, Speicher und Solarpumpe zu, dann zählen Laufzeit, Rekorde, Serien und Abzeichen.</p>
+      <button class="primary" id="setupBtn">Zuordnen</button>
+    </div>`);
+  const b = $('setupBtn');
+  if (b && !b._bound) {
+    b._bound = true;
+    b.addEventListener('click', () => { $('gameSettings').open = true; $('gameSettings').scrollIntoView({ behavior: 'smooth' }); });
+  }
+}
+
+/* ---------- Hauptschleife ---------- */
+async function refresh() {
+  try {
+    const res = await fetch('/api/status', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    data = await res.json();
+    clockOffset = data.now - Date.now();
+    const g = data.game;
+
+    $('offline').classList.remove('show');
+    $('liveDot').className = 'dot ok';
+    $('liveText').textContent = 'Live · ' + new Date(serverNow()).toLocaleTimeString('de-DE');
+
+    renderSetup(g);
+    renderPlayer(g);
+    renderStreak(g);
+    renderLive(g);
+    renderChart(g);
+    renderRecords(g);
+    renderBadges(g);
+    renderFeed(g);
+    renderSystem(data);
+    renderFields(data);
+    fillGameForm(data);
+    fillInfluxForm(data.influx);
+    announce(g);
+  } catch (e) {
+    $('offline').classList.add('show');
+    $('liveDot').className = 'dot error';
+    $('liveText').textContent = 'Offline';
+  }
+}
+
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => data && renderChart(data.game), 150);
+});
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

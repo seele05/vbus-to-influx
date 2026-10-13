@@ -4,3 +4,5 @@ config.local.json
 *.bak*
 .DS_Store
 .claude/
+game-state.json
+game-state.json.tmp

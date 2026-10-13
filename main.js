@@ -3,22 +3,31 @@
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+const zlib = require('zlib');
 
 const { SerialPort } = require('serialport');
 const { Connection, TcpConnectionEndpoint, Specification, HeaderSetConsolidator } = require('resol-vbus');
 const { InfluxDB, Point } = require('@influxdata/influxdb-client');
 
 const { objectIdOf, transformValue } = require('./lib/iobroker-compat');
+const { Game, SETTING_KEYS: GAME_KEYS } = require('./lib/game');
 const config = require('./config');
 
 
 const spec = new Specification({ language: config.language ?? 'de' });
 
+const INTERVAL_MS = (config.vbusInterval ?? 15) * 1000;
+
 // Ueber das Web-Interface geaenderte Werte liegen hier und ueberlagern config.js,
 // damit die kommentierte config.js unveraendert bleibt.
 const OVERRIDE_PATH = path.join(__dirname, 'config.local.json');
+const GAME_STATE_PATH = path.join(__dirname, 'game-state.json');
+const PAGE_PATH = path.join(__dirname, 'web', 'index.html');
 
 const EDITABLE_KEYS = ['url', 'token', 'org', 'bucket', 'namespace', 'from'];
+
+// TCP-Clients, die so viele Bytes nicht abholen, werden getrennt (statt den Speicher zu fuellen)
+const TCP_MAX_BACKLOG = 1024 * 1024;
 
 
 function loadOverrides() {
@@ -38,15 +47,16 @@ function saveOverrides(overrides) {
 }
 
 
-let influxSettings = { ...config.influx, ...(loadOverrides().influx ?? {}) };
+const overridesAtStart = loadOverrides();
+
+let influxSettings = { ...config.influx, ...(overridesAtStart.influx ?? {}) };
 let influxWriteApi = createWriteApi();
 
-function createWriteApi() {
-    return new InfluxDB({
-        url: influxSettings.url,
-        token: influxSettings.token ?? '',
-    }).getWriteApi(influxSettings.org ?? '', influxSettings.bucket, 'ms');
-}
+const game = new Game({
+    settings: { ...config.game, ...(overridesAtStart.game ?? {}) },
+    statePath: GAME_STATE_PATH,
+    intervalMs: INTERVAL_MS,
+});
 
 
 // Whitelist der zu schreibenden Datenpunkte. null/undefined => alle.
@@ -54,7 +64,7 @@ const datapointFilter = Array.isArray(config.datapoints) ? new Set(config.datapo
 
 // Shared state fuer das Web-Interface
 const portStates = new Map();   // channel -> { path, status, lastSeen, clients }
-const latestFields = new Map(); // objectId -> { name, objectId, textValue, value, logged, channel, timestamp }
+const latestFields = new Map(); // objectId -> { name, objectId, textValue, value, unit, logged, written, channel, timestamp }
 const startedAt = Date.now();
 
 const influxState = {
@@ -68,9 +78,31 @@ const influxState = {
     failures: 0,
 };
 
-// Registry fuer den TCP-Endpunkt und aktive TCP-Clients je Kanal
-const serialPorts = [];
-const tcpClients = new Map();
+// Aktuell offene serielle Ports und aktive TCP-Clients je Kanal
+const serialPorts = new Map();  // channel -> SerialPort
+const tcpClients = new Map();   // channel -> Set<Socket>
+
+
+function createWriteApi() {
+    // Die Hooks werden fuer jeden Batch aufgerufen, auch fuer spaetere Wiederholungen
+    // aus dem Retry-Puffer des Clients. So stimmen die Zaehler in der Web-UI.
+    return new InfluxDB({
+        url: influxSettings.url,
+        token: influxSettings.token ?? '',
+    }).getWriteApi(influxSettings.org ?? '', influxSettings.bucket, 'ms', {
+        writeSuccess(lines) {
+            influxState.lastWrite = Date.now();
+            influxState.writes += lines.length;
+            influxState.lastError = null;
+            influxState.status = 'ok';
+        },
+        writeFailed(error) {
+            influxState.failures += 1;
+            influxState.lastError = error.message;
+            influxState.status = 'error';
+        },
+    });
+}
 
 
 function sleep(ms) {
@@ -140,22 +172,29 @@ function handleHeaderSet(portConfig, headerSet) {
     const packetFields = spec.getPacketFieldsForHeaders(headerSet.getSortedHeaders());
     const timestamp = headerSet.timestamp;
     const points = [];
+    const values = new Map();
 
-    const record = (objectId, name, value, textValue) => {
+    const record = (objectId, name, value, textValue, unit) => {
         const logged = !datapointFilter || datapointFilter.has(objectId);
+        const hasValue = value !== null && value !== undefined;
 
         latestFields.set(objectId, {
             objectId,
             name,
             value,
             textValue,
+            unit,
             logged,
+            written: logged && hasValue,
             channel: portConfig.channel,
             timestamp,
         });
 
-        if (logged && value !== null && value !== undefined) {
-            points.push(buildPoint(objectId, value, timestamp));
+        if (hasValue) {
+            values.set(objectId, value);
+            if (logged) {
+                points.push(buildPoint(objectId, value, timestamp));
+            }
         }
     };
 
@@ -163,10 +202,10 @@ function handleHeaderSet(portConfig, headerSet) {
         const objectId = objectIdOf(packetField);
         const { value, extra } = transformValue(spec, packetField);
 
-        record(objectId, packetField.name, value, packetField.formatTextValue());
+        record(objectId, packetField.name, value, packetField.formatTextValue(), packetField.packetFieldSpec.type.unit.unitId);
 
         if (extra) {
-            record(objectId + extra.suffix, `${packetField.name} (aktiv)`, extra.value, String(extra.value));
+            record(objectId + extra.suffix, `${packetField.name} (aktiv)`, extra.value, String(extra.value), 'Boolean');
         }
     }
 
@@ -175,21 +214,22 @@ function handleHeaderSet(portConfig, headerSet) {
         state.lastSeen = timestamp;
     }
 
+    try {
+        game.update(values, timestamp);
+    } catch (err) {
+        console.error('Spiel-Auswertung fehlgeschlagen:', err);
+    }
+
     if (points.length === 0) {
         return;
     }
 
-    const writeApi = influxWriteApi;
-    writeApi.writePoints(points);
-    writeApi.flush().then(() => {
-        influxState.lastWrite = Date.now();
-        influxState.writes += points.length;
-        influxState.lastError = null;
+    // Erfolg/Fehler zaehlen die Hooks in createWriteApi(); fehlgeschlagene Batches
+    // landen im Retry-Puffer des Clients und werden spaeter erneut gesendet.
+    influxWriteApi.writePoints(points);
+    influxWriteApi.flush().then(() => {
         console.log(`[ch${portConfig.channel}] ${points.length} Datenpunkte -> InfluxDB`);
     }).catch(err => {
-        influxState.failures += 1;
-        influxState.lastError = err.message;
-        influxState.status = 'error';
         console.error(`[ch${portConfig.channel}] InfluxDB-Schreibfehler:`, err.message);
     });
 }
@@ -216,7 +256,7 @@ async function applyInfluxSettings(patch) {
     }
 
     const overrides = loadOverrides();
-    overrides.influx = Object.fromEntries(EDITABLE_KEYS.map(k => [k, next[k]]));
+    overrides.influx = Object.fromEntries(EDITABLE_KEYS.map(k => [k, next[k] ?? '']));
     saveOverrides(overrides);
 
     const previous = influxWriteApi;
@@ -227,6 +267,31 @@ async function applyInfluxSettings(patch) {
     await checkInflux();
 
     console.log(`InfluxDB-Einstellungen geaendert -> ${influxSettings.url} bucket=${influxSettings.bucket}`);
+}
+
+
+/**
+ * Uebernimmt die Datenpunkt-Zuordnung des Spiels zur Laufzeit.
+ */
+function applyGameSettings(patch) {
+    const filtered = Object.fromEntries(
+        GAME_KEYS.filter(k => Object.prototype.hasOwnProperty.call(patch, k)).map(k => [k, patch[k]])
+    );
+
+    for (const key of ['collector', 'storage', 'pump', 'irradiation']) {
+        const v = filtered[key];
+        if (v !== undefined && v !== null && v !== '' && !/^[0-9A-Za-z_.]+$/.test(String(v))) {
+            throw new Error(`${key}: ungueltige Datenpunkt-ID`);
+        }
+    }
+
+    game.setSettings(filtered);
+
+    const overrides = loadOverrides();
+    overrides.game = game.settings;
+    saveOverrides(overrides);
+
+    console.log(`Spiel-Zuordnung geaendert -> ${JSON.stringify(game.settings)}`);
 }
 
 
@@ -247,8 +312,8 @@ async function runPort(portConfig) {
 
     const parser = new Connection();
     const hsc = new HeaderSetConsolidator({
-        interval: (config.vbusInterval ?? 15) * 1000,
-        timeToLive: ((config.vbusInterval ?? 15) * 1000) + 1000,
+        interval: INTERVAL_MS,
+        timeToLive: INTERVAL_MS + 1000,
     });
 
     parser.on('packet', p => hsc.addHeader(p));
@@ -283,13 +348,17 @@ async function runPort(portConfig) {
         console.log(`[ch${channel}] verbunden`);
         backoff = 2_000;
 
-        const entry = { channel, port };
-        serialPorts.push(entry);
+        serialPorts.set(channel, port);
 
         port.on('readable', () => {
             let chunk;
             while ((chunk = port.read())) {
                 for (const socket of clientsFor(channel)) {
+                    if (socket.writableLength > TCP_MAX_BACKLOG) {
+                        console.error(`[tcp] Client liest nicht mit (${socket.writableLength} Bytes Rueckstau), trenne`);
+                        socket.destroy();
+                        continue;
+                    }
                     socket.write(chunk);
                 }
                 parser.receive(new Date(), chunk);
@@ -297,24 +366,16 @@ async function runPort(portConfig) {
         });
 
         await new Promise(resolve => {
-            let done = false;
-            const finish = () => {
-                if (!done) {
-                    done = true;
-                    resolve();
-                }
-            };
             port.on('error', err => {
                 console.error(`[ch${channel}] Portfehler: ${err.message}`);
-                finish();
+                resolve();
             });
-            port.on('close', finish);
-            port.on('end', finish);
+            port.on('close', resolve);
+            port.on('end', resolve);
         });
 
-        const idx = serialPorts.indexOf(entry);
-        if (idx >= 0) {
-            serialPorts.splice(idx, 1);
+        if (serialPorts.get(channel) === port) {
+            serialPorts.delete(channel);
         }
 
         portStates.get(channel).status = 'disconnected';
@@ -333,7 +394,8 @@ async function runPort(portConfig) {
 
 /**
  * TCP-Endpunkt in der Rolle der alten serial-to-tcp-Bridge, damit weitere
- * VBus-Clients unveraendert weiterlaufen koennen.
+ * VBus-Clients unveraendert weiterlaufen koennen. Clients bleiben auch ueber
+ * einen Neuaufbau des seriellen Ports hinweg verbunden.
  */
 async function startTcpEndpoint() {
     const channels = config.serialPorts.reduce((memo, portConfig) => {
@@ -348,10 +410,10 @@ async function startTcpEndpoint() {
 
     endpoint.on('connection', connectionInfo => {
         const channel = +(connectionInfo.channel || '0');
-        const entry = serialPorts.find(p => p.channel === channel);
         const socket = connectionInfo.socket;
+        const state = portStates.get(channel);
 
-        if (!entry) {
+        if (!state) {
             console.log(`[tcp] weise Verbindung fuer unbekannten Kanal ${channel} ab`);
             socket.end();
             return;
@@ -361,26 +423,25 @@ async function startTcpEndpoint() {
 
         const clients = clientsFor(channel);
         clients.add(socket);
-        const state = portStates.get(channel);
-        if (state) state.clients = clients.size;
-
-        const remove = () => {
-            clients.delete(socket);
-            if (state) state.clients = clients.size;
-        };
+        state.clients = clients.size;
 
         socket.on('error', err => {
             console.error(`[tcp] ${err.message}`);
-            remove();
         });
-        socket.on('end', () => {
+        // 'close' kommt in jedem Fall (Ende, Fehler, destroy) genau einmal
+        socket.on('close', () => {
+            clients.delete(socket);
+            state.clients = clients.size;
             console.log(`[tcp] Client getrennt (Kanal ${channel})`);
-            remove();
         });
         socket.on('readable', () => {
             let chunk;
             while ((chunk = socket.read())) {
-                entry.port.write(chunk);
+                // immer den aktuell offenen Port nehmen, nicht den zum Verbindungszeitpunkt
+                const port = serialPorts.get(channel);
+                if (port && port.isOpen) {
+                    port.write(chunk);
+                }
             }
         });
     });
@@ -388,205 +449,6 @@ async function startTcpEndpoint() {
     await endpoint.start();
     console.log(`TCP-Endpunkt -> Port ${config.tcp.port}`);
 }
-
-
-const PAGE = `<!DOCTYPE html>
-<html lang="de">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VBus Monitor</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, -apple-system, sans-serif; background: #0f1117; color: #e2e8f0; padding: 24px; min-height: 100vh; }
-    h1 { font-size: 1.2rem; font-weight: 600; margin-bottom: 20px; color: #f1f5f9; letter-spacing: -0.01em; }
-    .cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 28px; }
-    .card { background: #1a1d2e; border: 1px solid #252840; border-radius: 10px; padding: 14px 18px; min-width: 230px; }
-    .card .label { font-size: 0.75rem; color: #64748b; margin-bottom: 8px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
-    .card .sub { font-size: 0.8rem; color: #94a3b8; margin-bottom: 10px; font-family: ui-monospace, monospace; word-break: break-all; }
-    .status-row { display: flex; align-items: center; gap: 8px; }
-    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-    .dot.connected, .dot.ok { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
-    .dot.disconnected, .dot.error { background: #ef4444; }
-    .dot.connecting, .dot.unknown { background: #f59e0b; animation: blink 1s ease-in-out infinite; }
-    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
-    .status-text { font-size: 0.9rem; font-weight: 500; }
-    .status-text.connected, .status-text.ok { color: #22c55e; }
-    .status-text.disconnected, .status-text.error { color: #ef4444; }
-    .status-text.connecting, .status-text.unknown { color: #f59e0b; }
-    .note { font-size: 0.72rem; color: #475569; margin-top: 6px; }
-    .note.bad { color: #f87171; }
-    .section { font-size: 0.7rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: #475569; margin: 0 0 10px; }
-    .meta { font-size: 0.75rem; color: #475569; margin-bottom: 14px; }
-    details { background: #151824; border: 1px solid #252840; border-radius: 10px; margin-bottom: 28px; }
-    summary { cursor: pointer; padding: 12px 18px; font-size: 0.8rem; font-weight: 600; color: #94a3b8; user-select: none; }
-    summary:hover { color: #e2e8f0; }
-    .form { padding: 4px 18px 18px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
-    .field { display: flex; flex-direction: column; gap: 5px; }
-    .field label { font-size: 0.7rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
-    .field input { background: #0f1117; border: 1px solid #252840; border-radius: 6px; padding: 8px 10px; color: #e2e8f0; font-family: ui-monospace, monospace; font-size: 0.82rem; }
-    .field input:focus { outline: none; border-color: #3b82f6; }
-    .field .hint { font-size: 0.68rem; color: #3f4c60; }
-    .actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; }
-    button { background: #2563eb; border: 0; border-radius: 6px; color: #fff; padding: 9px 20px; font-size: 0.82rem; font-weight: 600; cursor: pointer; }
-    button:hover { background: #1d4ed8; }
-    button:disabled { background: #1e293b; color: #64748b; cursor: default; }
-    #formMsg { font-size: 0.78rem; }
-    #formMsg.ok { color: #4ade80; }
-    #formMsg.bad { color: #f87171; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-    thead th { text-align: left; padding: 8px 10px; color: #64748b; font-weight: 500; font-size: 0.75rem; border-bottom: 1px solid #1a1d2e; }
-    tbody td { padding: 9px 10px; border-bottom: 1px solid #151824; }
-    tbody tr:hover td { background: #1a1d2e; }
-    tbody tr.muted td { opacity: 0.45; }
-    .field-name { color: #e2e8f0; }
-    .field-value { font-family: ui-monospace, monospace; color: #93c5fd; font-size: 0.9rem; }
-    .field-id { color: #475569; font-size: 0.7rem; font-family: ui-monospace, monospace; }
-    .field-age { color: #334155; font-size: 0.75rem; }
-    .badge { font-size: 0.65rem; padding: 2px 7px; border-radius: 20px; font-weight: 600; }
-    .badge.on { background: #14331f; color: #4ade80; }
-    .badge.off { background: #1e2130; color: #64748b; }
-    .no-data { color: #475569; font-size: 0.85rem; padding: 16px 10px; }
-  </style>
-</head>
-<body>
-  <h1>VBus Monitor</h1>
-
-  <div class="cards" id="cards">—</div>
-
-  <details id="cfg">
-    <summary>InfluxDB-Einstellungen</summary>
-    <div class="form" id="form">
-      <div class="field"><label for="f-url">URL</label><input id="f-url" spellcheck="false"><span class="hint">z. B. http://influxdb.example:8086</span></div>
-      <div class="field"><label for="f-bucket">Bucket</label><input id="f-bucket" spellcheck="false"><span class="hint">bei InfluxDB 1.x: datenbank/autogen</span></div>
-      <div class="field"><label for="f-token">Token</label><input id="f-token" spellcheck="false"><span class="hint">1.x ohne Auth: leer, sonst benutzer:passwort</span></div>
-      <div class="field"><label for="f-org">Org</label><input id="f-org" spellcheck="false"><span class="hint">bei InfluxDB 1.x leer</span></div>
-      <div class="field"><label for="f-namespace">Namespace</label><input id="f-namespace" spellcheck="false"><span class="hint">Praefix der Measurement-Namen</span></div>
-      <div class="field"><label for="f-from">from-Feld</label><input id="f-from" spellcheck="false"><span class="hint">Inhalt des Feldes "from"</span></div>
-      <div class="actions">
-        <button id="save">Speichern und anwenden</button>
-        <span id="formMsg"></span>
-      </div>
-    </div>
-  </details>
-
-  <div class="section">Datenpunkte</div>
-  <div class="meta" id="meta">—</div>
-  <table>
-    <thead><tr><th>Feld</th><th>Wert</th><th>InfluxDB</th><th>Datenpunkt-ID</th><th>Alter</th></tr></thead>
-    <tbody id="tbody"><tr><td colspan="5" class="no-data">Warte auf Daten…</td></tr></tbody>
-  </table>
-
-<script>
-  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  function age(ts) {
-    if (!ts) return '–';
-    const s = Math.floor((Date.now() - new Date(ts)) / 1000);
-    if (s < 60) return s + 's';
-    if (s < 3600) return Math.floor(s / 60) + ' min';
-    return Math.floor(s / 3600) + ' h';
-  }
-  function fmtUptime(ms) {
-    const s = Math.floor(ms / 1000);
-    const d = Math.floor(s / 86400);
-    const h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
-    const hms = [h, m, ss].map(n => String(n).padStart(2, '0')).join(':');
-    return d ? d + 'd ' + hms : hms;
-  }
-  const portLabel = s => s === 'connected' ? 'Verbunden' : s === 'connecting' ? 'Verbinde…' : 'Getrennt';
-  const influxLabel = s => s === 'ok' ? 'Erreichbar' : s === 'error' ? 'Nicht erreichbar' : 'Unbekannt';
-
-  let formTouched = false;
-  document.getElementById('form').addEventListener('input', () => { formTouched = true; });
-
-  function fillForm(cfg) {
-    if (formTouched) return;
-    for (const k of ['url','bucket','token','org','namespace','from']) {
-      const el = document.getElementById('f-' + k);
-      if (el) el.value = cfg[k] ?? '';
-    }
-  }
-
-  document.getElementById('save').addEventListener('click', async () => {
-    const btn = document.getElementById('save');
-    const msg = document.getElementById('formMsg');
-    const body = {};
-    for (const k of ['url','bucket','token','org','namespace','from']) {
-      body[k] = document.getElementById('f-' + k).value.trim();
-    }
-    btn.disabled = true; msg.className = ''; msg.textContent = 'Wird angewendet…';
-    try {
-      const res = await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
-      msg.className = 'ok';
-      msg.textContent = 'Gespeichert — InfluxDB ' + influxLabel(data.influx.status).toLowerCase() + '.';
-      formTouched = false;
-      refresh();
-    } catch (e) {
-      msg.className = 'bad';
-      msg.textContent = 'Fehler: ' + e.message;
-    } finally {
-      btn.disabled = false;
-      setTimeout(() => { if (msg.className === 'ok') { msg.textContent = ''; msg.className = ''; } }, 6000);
-    }
-  });
-
-  async function refresh() {
-    try {
-      const data = await (await fetch('/api/status')).json();
-      const inf = data.influx;
-
-      const portCards = Object.entries(data.ports).map(([ch, p]) => \`
-        <div class="card">
-          <div class="label">Kanal \${ch}</div>
-          <div class="sub">\${esc(p.path)}</div>
-          <div class="status-row"><div class="dot \${p.status}"></div><span class="status-text \${p.status}">\${portLabel(p.status)}</span></div>
-          <div class="note">\${p.lastSeen ? 'Letzte Daten vor ' + age(p.lastSeen) : 'noch keine Daten'} · \${p.clients} TCP-Client(s)</div>
-        </div>\`).join('');
-
-      const influxCard = \`
-        <div class="card">
-          <div class="label">InfluxDB</div>
-          <div class="sub">\${esc(inf.url)}<br>\${esc(inf.bucket)}</div>
-          <div class="status-row"><div class="dot \${inf.status}"></div><span class="status-text \${inf.status}">\${influxLabel(inf.status)}</span>\${inf.version ? '<span class="note" style="margin:0">v' + esc(inf.version) + '</span>' : ''}</div>
-          <div class="note">Letzter Schreibvorgang vor \${age(inf.lastWrite)} · \${inf.writes} Punkte\${inf.failures ? ', ' + inf.failures + ' Fehler' : ''}</div>
-          \${inf.lastError ? '<div class="note bad">' + esc(inf.lastError) + '</div>' : ''}
-        </div>\`;
-
-      document.getElementById('cards').innerHTML = portCards + influxCard;
-      fillForm(inf);
-
-      const entries = Object.values(data.fields).sort((a, b) => (b.logged - a.logged) || a.name.localeCompare(b.name, 'de'));
-      const tbody = document.getElementById('tbody');
-      if (!entries.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="no-data">Noch keine Daten empfangen…</td></tr>';
-      } else {
-        tbody.innerHTML = entries.map(f => \`
-          <tr class="\${f.logged ? '' : 'muted'}">
-            <td class="field-name">\${esc(f.name)}</td>
-            <td class="field-value">\${esc(f.textValue)}</td>
-            <td><span class="badge \${f.logged ? 'on' : 'off'}">\${f.logged ? 'geschrieben' : 'nur Anzeige'}</span></td>
-            <td class="field-id">\${esc(f.objectId)}</td>
-            <td class="field-age">\${age(f.timestamp)}</td>
-          </tr>\`).join('');
-      }
-      const written = entries.filter(f => f.logged).length;
-      document.getElementById('meta').textContent =
-        \`\${entries.length} Datenpunkte · \${written} nach InfluxDB · Uptime \${fmtUptime(data.uptime)} · \${new Date().toLocaleTimeString('de')}\`;
-    } catch (e) {
-      document.getElementById('meta').textContent = 'Verbindung zum Server unterbrochen…';
-    }
-  }
-  refresh();
-  setInterval(refresh, 5000);
-</script>
-</body>
-</html>`;
 
 
 function readJsonBody(req) {
@@ -601,7 +463,11 @@ function readJsonBody(req) {
         });
         req.on('end', () => {
             try {
-                resolve(raw ? JSON.parse(raw) : {});
+                const body = raw ? JSON.parse(raw) : {};
+                if (!body || typeof body !== 'object' || Array.isArray(body)) {
+                    throw new Error();
+                }
+                resolve(body);
             } catch (err) {
                 reject(new Error('ungueltiges JSON'));
             }
@@ -612,15 +478,21 @@ function readJsonBody(req) {
 
 
 function startWebServer() {
-    const webPort = config.web?.port ?? 8080;
+    const webPort = config.web?.port ?? 80;
+
+    // Seite einmal laden und vorkomprimieren; auf dem Pi Zero spart das bei jedem Abruf CPU
+    const page = fs.readFileSync(PAGE_PATH);
+    const pageGzip = zlib.gzipSync(page, { level: 9 });
 
     const sendJson = (res, code, payload) => {
         res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(payload));
     };
 
+    // Das Token verlaesst den Server nicht; die UI erfaehrt nur, ob eines gesetzt ist
     const influxView = () => ({
-        ...Object.fromEntries(EDITABLE_KEYS.map(k => [k, influxSettings[k] ?? ''])),
+        ...Object.fromEntries(EDITABLE_KEYS.filter(k => k !== 'token').map(k => [k, influxSettings[k] ?? ''])),
+        tokenSet: !!influxSettings.token,
         status: influxState.status,
         version: influxState.version,
         message: influxState.message,
@@ -634,11 +506,13 @@ function startWebServer() {
     const server = http.createServer(async (req, res) => {
         const url = (req.url || '/').split('?')[0];
 
-        if (url === '/api/status') {
+        if (url === '/api/status' && req.method === 'GET') {
             return sendJson(res, 200, {
+                now: Date.now(),
                 ports: Object.fromEntries(portStates),
                 fields: Object.fromEntries(latestFields),
                 influx: influxView(),
+                game: game.view(),
                 uptime: Date.now() - startedAt,
             });
         }
@@ -656,8 +530,30 @@ function startWebServer() {
             }
         }
 
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(PAGE);
+        if (url === '/api/game' && req.method === 'POST') {
+            try {
+                applyGameSettings(await readJsonBody(req));
+                return sendJson(res, 200, { ok: true, game: game.view() });
+            } catch (err) {
+                return sendJson(res, 400, { error: err.message });
+            }
+        }
+
+        if ((url === '/' || url === '/index.html') && (req.method === 'GET' || req.method === 'HEAD')) {
+            const gzip = /\bgzip\b/.test(req.headers['accept-encoding'] ?? '');
+            const body = gzip ? pageGzip : page;
+            res.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Content-Length': body.length,
+                'Cache-Control': 'no-cache',
+                'Vary': 'Accept-Encoding',
+                'X-Content-Type-Options': 'nosniff',
+                ...(gzip ? { 'Content-Encoding': 'gzip' } : {}),
+            });
+            return res.end(req.method === 'HEAD' ? undefined : body);
+        }
+
+        sendJson(res, 404, { error: 'nicht gefunden' });
     });
 
     server.on('error', err => {
@@ -672,11 +568,13 @@ function startWebServer() {
 
 async function main() {
     console.log(`InfluxDB -> ${influxSettings.url}  bucket=${influxSettings.bucket}  namespace=${influxSettings.namespace ?? 'resol.0'}`);
-    console.log(`Intervall: ${config.vbusInterval ?? 15}s  Datenpunkte: ${datapointFilter ? datapointFilter.size + ' (Whitelist)' : 'alle'}`);
+    console.log(`Intervall: ${INTERVAL_MS / 1000}s  Datenpunkte: ${datapointFilter ? datapointFilter.size + ' (Whitelist)' : 'alle'}`);
 
     if (config.web !== false) {
         startWebServer();
     }
+
+    game.startAutosave();
 
     checkInflux();
     setInterval(checkInflux, 30_000);
@@ -697,6 +595,7 @@ async function main() {
         if (shuttingDown) return;
         shuttingDown = true;
         console.log('\nBeende …');
+        game.save();
         await influxWriteApi.close().catch(() => {});
         process.exit(0);
     }

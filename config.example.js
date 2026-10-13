@@ -39,6 +39,18 @@ module.exports = {
         from: 'system.adapter.resol.0',
     },
 
+    // Gamification (Level, Rekorde, Sonnenserie, Abzeichen) in der Web-Oberflaeche.
+    // Die Datenpunkt-IDs stehen in der Web-UI in der Tabelle "Datenpunkte"; bequemer
+    // ist die Zuordnung dort unter "Spiel-Zuordnung" (wird in config.local.json gespeichert
+    // und ueberschreibt diese Werte). null = nicht zugeordnet.
+    game: {
+        collector: null,        // Temperatur am Kollektor (°C)
+        storage: null,          // Speichertemperatur (°C)
+        pump: null,             // Relais/Drehzahl der Solarpumpe (%), > 0 = laeuft
+        irradiation: null,      // optional: Einstrahlung (W/m²)
+        sunnyDayMinutes: 60,    // Pumpenlaufzeit, ab der ein Tag als Sonnentag zaehlt
+    },
+
     // Whitelist der zu schreibenden Datenpunkt-IDs.
     // Weglassen oder auf null setzen => alle erkannten Datenpunkte schreiben.
     // Format: <Geraeteadresse>.<Quelle>.<Paket-/Feld-ID>, z. B.
